@@ -1,0 +1,75 @@
+name: Build SexLabUtil (SE 1.5.97 test)
+
+on:
+  push:
+    branches: [dwemers-edition]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Apply compatibility switches
+        shell: bash
+        run: |
+          python - <<'EOF'
+          def sub(path, old, new):
+              s = open(path, newline='').read()
+              nl = '\r\n' if '\r\n' in s else '\n'
+              old = old.replace('\n', nl)
+              new = new.replace('\n', nl)
+              if new in s:
+                  print('already applied:', path)
+                  return
+              assert s.count(old) == 1, (path, s.count(old))
+              open(path, 'w', newline='').write(s.replace(old, new))
+              print('patched:', path)
+
+          sub('src/UserData/mcm.def',
+              'MCM_SETTING(bPatchTiltGuard, true)\n',
+              'MCM_SETTING(bPatchTiltGuard, true)\n'
+              '// Compatibility switches (Skyrim SE 1.5.97 troubleshooting). true = current behaviour.\n'
+              'MCM_SETTING(bPatchCollisionDetach, true)\n'
+              'MCM_SETTING(bPatchCrosshairFilter, true)\n')
+
+          sub('src/Thread/Collision/CollisionHandler.cpp',
+              '            a_actor->DetachCharController();\n',
+              '            if (::Settings::bPatchCollisionDetach) {\n'
+              '                a_actor->DetachCharController();\n'
+              '            }\n')
+
+          sub('src/main.cpp',
+              '        if (!a_event)\n            return EventResult::kContinue;\n\n        const bool sendEvent',
+              '        if (!a_event || !::Settings::bPatchCrosshairFilter)\n            return EventResult::kContinue;\n\n        const bool sendEvent')
+          EOF
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Configure
+        run: xmake f -m release -y --build_papyrus=n --build_spriggit=n --build_assets=n
+
+      - name: Build
+        run: xmake build -y -v SexLabUtil
+
+      - name: Collect DLL
+        shell: bash
+        run: |
+          mkdir -p out
+          find . -name "SexLabUtil.dll" -not -path "./out/*" -exec cp {} out/ \; -quit
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SexLabUtil-dll
+          path: out/SexLabUtil.dll
+          if-no-files-found: error
